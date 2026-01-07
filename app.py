@@ -96,8 +96,11 @@ def create_app():
     def queue_task(bypass_queue=False):
         def decorator(f):
             def wrapper(*args, **kwargs):
-                job_id = str(uuid.uuid4())
                 data = request.json if request.is_json else {}
+                # Use _cloud_job_id from payload if available (for cloud jobs), otherwise generate new UUID
+                job_id = data.pop('_cloud_job_id', None) or str(uuid.uuid4())
+
+
                 pid = os.getpid()  # Get PID for non-queued tasks
                 start_time = time.time()
 
@@ -151,8 +154,19 @@ def create_app():
 
                     return response_obj, response[2]
 
-                if os.environ.get("GCP_JOB_NAME") and data.get("webhook_url"):
+                # Check if cloud job should be disabled (env var or payload)
+                disable_by_env = os.environ.get("DISABLE_CLOUD_JOB", "").lower() in ["true", "1"]
+                disable_cloud = (
+                    (disable_by_env and data.get("disable_cloud_job") is not False) or  # Env disabled, not overridden by false
+                    data.get("disable_cloud_job") is True  # Explicitly disabled in payload
+                )
+
+                if os.environ.get("GCP_JOB_NAME") and data.get("webhook_url") and not disable_cloud:
                     try:
+                        # Create enhanced payload with original job_id for cloud jobs
+                        cloud_payload = data.copy()
+                        cloud_payload['_cloud_job_id'] = job_id
+
                         overrides = {
                             'container_overrides': [
                                 {
@@ -164,7 +178,7 @@ def create_app():
                                         },
                                         {
                                             'name': 'GCP_JOB_PAYLOAD',
-                                            'value': json.dumps(data)  # Payload as a string
+                                            'value': json.dumps(cloud_payload)  # Enhanced payload with job_id
                                         },
                                     ]
                                 }
