@@ -1,39 +1,63 @@
-FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
+# === Stage 1: 獲取支援 NVENC 的神裝 FFmpeg ===
+FROM jellyfin/ffmpeg:latest AS ffmpeg_source
 
+# === Stage 2: RunPod GPU 環境 ===
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+
+# 環境變數
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
 
-# 安裝 FFmpeg 和字體（字幕渲染需要）
+# 1. 安裝系統依賴
+# [修正] 加入 build-essential, python3-dev (編譯用) 和 libmagic1 (python-magic 必備)
 RUN apt-get update && apt-get install -y \
-    ffmpeg \
+    python3.10 \
+    python3-pip \
+    python3.10-venv \
+    python3-dev \
+    build-essential \
     libmagic1 \
-    fonts-noto-cjk \
-    fonts-noto-color-emoji \
+    curl \
+    wget \
+    git \
+    libva-drm2 \
+    libva2 \
+    libdrm2 \
     && rm -rf /var/lib/apt/lists/*
+
+# 2. [關鍵修正] 解除 Ubuntu 的 pip 限制 (PEP 668)
+# 這行指令會刪除阻止我們安裝套件的標記檔
+RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
+
+# 3. 複製 FFmpeg
+COPY --from=ffmpeg_source /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/local/bin/ffmpeg
+COPY --from=ffmpeg_source /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe
+RUN chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+
+# 4. 設置 Python
+RUN ln -sf /usr/bin/python3.10 /usr/bin/python && \
+    ln -sf /usr/bin/pip3 /usr/bin/pip
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir --upgrade pip
+# 5. 安裝 Python 依賴
+COPY requirements.txt .
 
-# FFmpeg + Caption 必要依賴
-RUN pip install --no-cache-dir \
-    Flask \
-    Werkzeug \
-    requests \
-    ffmpeg-python \
-    gunicorn \
-    APScheduler \
-    srt \
-    psutil \
-    boto3 \
-    Pillow \
-    runpod \
-    python-magic
+# [修正] 升級 pip 並安裝依賴
+# 加入 --no-cache-dir 減小體積
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir runpod requests
 
+# 6. 複製代碼
 COPY . .
 
+# 創建臨時目錄
 RUN mkdir -p /tmp/uploads && chmod 777 /tmp/uploads
 
 EXPOSE 8080
 
+# 啟動
 CMD ["python", "-u", "runpod_handler.py"]
