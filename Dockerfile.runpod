@@ -1,0 +1,67 @@
+# === Stage 1: 獲取支援 NVENC 的神裝 FFmpeg ===
+FROM jellyfin/ffmpeg:6.0.1-7 as ffmpeg_source
+
+# === Stage 2: RunPod GPU 環境 ===
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+
+# 環境變數
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+
+# 安裝系統依賴 (不包含 ffmpeg！)
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3-pip \
+    python3.10-venv \
+    libmagic1 \
+    curl \
+    wget \
+    git \
+    # FFmpeg 依賴庫
+    libva-drm2 \
+    libva2 \
+    libdrm2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# [關鍵] 複製 Jellyfin 的神裝 FFmpeg (包含 NVENC 支援)
+COPY --from=ffmpeg_source /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/local/bin/ffmpeg
+COPY --from=ffmpeg_source /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe
+
+# 確保 FFmpeg 可執行
+RUN chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+
+# 驗證 NVENC 支援
+RUN ffmpeg -encoders 2>/dev/null | grep nvenc || echo "Warning: NVENC not detected (expected in build stage)"
+
+# 設置 Python
+RUN ln -sf /usr/bin/python3.10 /usr/bin/python && \
+    ln -sf /usr/bin/pip3 /usr/bin/pip
+
+# 設置工作目錄
+WORKDIR /app
+
+# 複製依賴文件
+COPY requirements.txt .
+
+# 安裝 Python 依賴
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir runpod requests
+
+# 複製應用代碼
+COPY . .
+
+# 創建臨時目錄
+RUN mkdir -p /tmp/uploads && chmod 777 /tmp/uploads
+
+# 暴露端口
+EXPOSE 8080
+
+# === 選擇啟動模式 ===
+# Serverless 模式 (省錢，有冷啟動)
+CMD ["python", "-u", "runpod_handler.py"]
+
+# Pod 模式 (極速，24/7 運行)
+# CMD ["python", "app.py"]
