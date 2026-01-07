@@ -1,7 +1,4 @@
-# === Stage 1: 獲取支援 NVENC 的神裝 FFmpeg ===
-FROM jellyfin/ffmpeg:latest AS ffmpeg_source
-
-# === Stage 2: RunPod GPU 環境 ===
+# === RunPod GPU 環境 ===
 FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
 
 # 環境變數
@@ -10,8 +7,7 @@ ENV PYTHONUNBUFFERED=1
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
 
-# 1. 安裝系統依賴
-# [修正] 加入 build-essential, python3-dev (編譯用) 和 libmagic1 (python-magic 必備)
+# 1. 安裝基礎工具和 Python
 RUN apt-get update && apt-get install -y \
     python3.10 \
     python3-pip \
@@ -22,19 +18,25 @@ RUN apt-get update && apt-get install -y \
     curl \
     wget \
     git \
-    libva-drm2 \
-    libva2 \
-    libdrm2 \
+    gnupg \
+    lsb-release \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. [關鍵修正] 解除 Ubuntu 的 pip 限制 (PEP 668)
-# 這行指令會刪除阻止我們安裝套件的標記檔
-RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
+# 2. [關鍵修正] 手動加入 Jellyfin Repo 並安裝支援 NVENC 的 FFmpeg
+# 這樣我們就不需要從 Docker Hub 拉取 jellyfin/ffmpeg image 了
+RUN mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key | gpg --dearmor -o /etc/apt/keyrings/jellyfin.gpg && \
+    export VERSION_CODENAME=$(lsb_release -c -s) && \
+    echo "deb [signed-by=/etc/apt/keyrings/jellyfin.gpg] https://repo.jellyfin.org/ubuntu $VERSION_CODENAME main" | tee /etc/apt/sources.list.d/jellyfin.list && \
+    apt-get update && \
+    apt-get install -y jellyfin-ffmpeg6 && \
+    # 建立連結，讓系統找得到 ffmpeg
+    ln -s /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/local/bin/ffmpeg && \
+    ln -s /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe && \
+    rm -rf /var/lib/apt/lists/*
 
-# 3. 複製 FFmpeg
-COPY --from=ffmpeg_source /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/local/bin/ffmpeg
-COPY --from=ffmpeg_source /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe
-RUN chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+# 3. 解除 Ubuntu 的 pip 限制
+RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
 # 4. 設置 Python
 RUN ln -sf /usr/bin/python3.10 /usr/bin/python && \
@@ -42,11 +44,8 @@ RUN ln -sf /usr/bin/python3.10 /usr/bin/python && \
 
 WORKDIR /app
 
-# 5. 安裝 Python 依賴
+# 5. 安裝依賴
 COPY requirements.txt .
-
-# [修正] 升級 pip 並安裝依賴
-# 加入 --no-cache-dir 減小體積
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir runpod requests
