@@ -3,18 +3,32 @@ FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-# 安裝 FFmpeg
+# 安裝 FFmpeg 和字體（字幕渲染需要）
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     libmagic1 \
+    fonts-noto-cjk \
+    fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir runpod requests
+RUN pip install --no-cache-dir --upgrade pip
+
+# FFmpeg + Caption 必要依賴
+RUN pip install --no-cache-dir \
+    Flask \
+    Werkzeug \
+    requests \
+    ffmpeg-python \
+    gunicorn \
+    APScheduler \
+    srt \
+    psutil \
+    boto3 \
+    Pillow \
+    runpod \
+    python-magic
 
 COPY . .
 
