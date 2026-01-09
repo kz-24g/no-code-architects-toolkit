@@ -21,3 +21,4 @@ Pillow
 matplotlib
 yt-dlp
 runpod
+jsonschema
