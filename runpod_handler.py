@@ -1,5 +1,5 @@
 """
-RunPod Serverless Handler - 帶自動 GPU 編碼器替換
+RunPod Serverless Handler (Debug Version)
 """
 
 import runpod
@@ -8,6 +8,7 @@ import subprocess
 import time
 import os
 import logging
+import sys
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -17,105 +18,63 @@ flask_process = None
 def start_flask_server():
     global flask_process
     if flask_process is not None:
-        return
-    
+        if flask_process.poll() is None:
+            return
+        else:
+            logger.warning("⚠️ Old Flask process is dead, restarting...")
+
     logger.info("🚀 Starting Flask server...")
+    
+    # [修正] 移除 env 參數，讓它直接繼承系統環境變數，確保能吃到 Dockerfile 設定
+    # 使用 sys.executable 確保用的是同一個 Python 解譯器
     flask_process = subprocess.Popen(
-        ['python', 'app_runpod.py'],
-        env={**os.environ, 'PORT': '8080'}
+        [sys.executable, 'app_runpod.py'],
+        env=os.environ.copy() 
     )
     
-    for i in range(30):
+    # 等待服務器啟動 (增加到 60秒，並加入崩潰偵測)
+    for i in range(60):
+        # 1. 檢查 Flask 是否已經死掉 (Crash Detection)
+        return_code = flask_process.poll()
+        if return_code is not None:
+            # 如果進程結束了，拋出錯誤，這樣 Logs 就會顯示 Flask 為什麼死掉
+            raise RuntimeError(f"🔥 Flask server crashed immediately with exit code: {return_code}. Check logs above for ImportError or SyntaxError.")
+
+        # 2. 嘗試連線
         try:
-            response = requests.get('http://localhost:8080/health', timeout=2)
+            response = requests.get('http://localhost:8080/health', timeout=1)
             if response.status_code == 200:
                 logger.info(f"✅ Flask ready (attempt {i+1})")
                 return
-        except:
-            pass
+        except requests.exceptions.ConnectionError:
+            pass # 服務還沒起來，繼續等
+        except Exception as e:
+            logger.warning(f"Health check warning: {e}")
+
         time.sleep(1)
     
-    raise RuntimeError("Flask server startup timeout")
-
-
-def check_nvenc_available() -> bool:
-    """檢查 NVENC 是否可用"""
-    try:
-        result = subprocess.run(
-            ['ffmpeg', '-hide_banner', '-encoders'],
-            capture_output=True, text=True, timeout=10
-        )
-        return 'h264_nvenc' in result.stdout
-    except:
-        return False
-
-
-GPU_AVAILABLE = None  # 延遲初始化
-
-
-def auto_replace_encoder(body: dict) -> dict:
-    """自動將 CPU 編碼器替換為 GPU 編碼器"""
-    global GPU_AVAILABLE
-    
-    if GPU_AVAILABLE is None:
-        GPU_AVAILABLE = check_nvenc_available()
-        logger.info(f"🎮 GPU NVENC available: {GPU_AVAILABLE}")
-    
-    if not GPU_AVAILABLE:
-        return body
-    
-    # 深拷貝避免修改原始數據
-    import copy
-    body = copy.deepcopy(body)
-    
-    outputs = body.get('outputs', [])
-    for output in outputs:
-        options = output.get('options', [])
-        for opt in options:
-            option_name = opt.get('option', '')
-            if option_name in ['-c:v', '-codec:v', '-vcodec']:
-                original = opt.get('argument', '')
-                if original == 'libx264':
-                    opt['argument'] = 'h264_nvenc'
-                    logger.info("🎮 Auto-replaced: libx264 → h264_nvenc")
-                elif original == 'libx265':
-                    opt['argument'] = 'hevc_nvenc'
-                    logger.info("🎮 Auto-replaced: libx265 → hevc_nvenc")
-    
-    # 如果沒有指定編碼器，添加 GPU 編碼器
-    has_video_codec = any(
-        opt.get('option') in ['-c:v', '-codec:v', '-vcodec']
-        for output in outputs
-        for opt in output.get('options', [])
-    )
-    
-    if not has_video_codec and outputs:
-        outputs[0].setdefault('options', []).extend([
-            {'option': '-c:v', 'argument': 'h264_nvenc'},
-            {'option': '-preset', 'argument': 'p4'},
-            {'option': '-rc', 'argument': 'vbr'},
-            {'option': '-cq', 'argument': '23'},
-        ])
-        logger.info("🎮 Auto-added h264_nvenc encoder options")
-    
-    return body
-
+    # 如果跑完迴圈還沒好，殺掉進程並報錯
+    flask_process.terminate()
+    raise RuntimeError("⏳ Flask server startup timeout (60s). It did not crash, but is not responding.")
 
 def handler(event):
     try:
         start_flask_server()
         
         input_data = event.get('input', {})
-        endpoint = input_data.get('endpoint', '/health')
-        method = input_data.get('method', 'GET').upper()
-        body = input_data.get('body', {})
-        
-        # 自動替換編碼器為 GPU 版本
-        if endpoint == '/v1/ffmpeg/compose' and method == 'POST':
-            body = auto_replace_encoder(body)
+        # 兼容 n8n 的兩種傳參方式 (直接傳 body 或 包在 body 裡)
+        if 'endpoint' in input_data:
+            endpoint = input_data.get('endpoint')
+            method = input_data.get('method', 'POST')
+            body = input_data.get('body', {})
+        else:
+            # Fallback for simple tests
+            endpoint = '/health'
+            method = 'GET'
+            body = {}
         
         url = f"http://localhost:8080{endpoint}"
-        logger.info(f"📨 {method} {endpoint}")
+        logger.info(f"📨 Forwarding to: {method} {endpoint}")
         
         if method == 'POST':
             response = requests.post(url, json=body, timeout=600)
@@ -123,16 +82,13 @@ def handler(event):
             response = requests.get(url, timeout=60)
         
         try:
-            response_body = response.json()
+            return response.json()
         except:
-            response_body = response.text
-        
-        return {'status_code': response.status_code, 'body': response_body}
+            return response.text
         
     except Exception as e:
         logger.exception("Handler error")
         return {'error': str(e)}
-
 
 if __name__ == '__main__':
     logger.info("🎮 RunPod Serverless Handler starting")
