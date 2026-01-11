@@ -22,15 +22,14 @@ RUN apt-get update && apt-get install -y \
     lsb-release \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. [關鍵修正] 手動加入 Jellyfin Repo 並安裝支援 NVENC 的 FFmpeg
-# 這樣我們就不需要從 Docker Hub 拉取 jellyfin/ffmpeg image 了
+# 2. 手動加入 Jellyfin Repo 並安裝支援 NVENC 的 FFmpeg
 RUN mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key | gpg --dearmor -o /etc/apt/keyrings/jellyfin.gpg && \
     export VERSION_CODENAME=$(lsb_release -c -s) && \
     echo "deb [signed-by=/etc/apt/keyrings/jellyfin.gpg] https://repo.jellyfin.org/ubuntu $VERSION_CODENAME main" | tee /etc/apt/sources.list.d/jellyfin.list && \
     apt-get update && \
     apt-get install -y jellyfin-ffmpeg6 && \
-    # 建立連結，讓系統找得到 ffmpeg
+    # 建立連結
     ln -s /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/local/bin/ffmpeg && \
     ln -s /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe && \
     rm -rf /var/lib/apt/lists/*
@@ -44,11 +43,12 @@ RUN ln -sf /usr/bin/python3.10 /usr/bin/python && \
 
 WORKDIR /app
 
-# 5. 安裝依賴
+# 5. [關鍵修改] 安裝依賴 (強制安裝 jsonschema)
 COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir runpod requests
+    # 這裡強制安裝 jsonschema, boto3, psutil, ffmpeg-python 以防止快取問題遺漏
+    pip install --no-cache-dir runpod requests jsonschema boto3 psutil ffmpeg-python
 
 # 6. 複製代碼
 COPY . .
