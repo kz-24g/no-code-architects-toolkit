@@ -62,33 +62,53 @@ def handler(event):
         start_flask_server()
         
         input_data = event.get('input', {})
-        # 兼容 n8n 的兩種傳參方式 (直接傳 body 或 包在 body 裡)
+        
+        # 1. 解析 n8n 傳來的參數
         if 'endpoint' in input_data:
             endpoint = input_data.get('endpoint')
             method = input_data.get('method', 'POST')
             body = input_data.get('body', {})
         else:
-            # Fallback for simple tests
             endpoint = '/health'
             method = 'GET'
             body = {}
         
         url = f"http://localhost:8080{endpoint}"
         logger.info(f"📨 Forwarding to: {method} {endpoint}")
+
+        # ======================================================
+        # [關鍵修改] 從 RunPod 環境變數讀取 API Key
+        # ======================================================
+        # 我們不再 Hardcode，直接讀取你在 RunPod 設定的 "API_KEY"
+        api_key = os.environ.get('API_KEY')
         
+        if not api_key:
+            # 如果讀不到，記錄警告 (方便除錯)
+            logger.warning("⚠️ Warning: API_KEY not found in environment variables!")
+
+        # 建立 Headers，把 Key 放進去
+        headers = {
+            'Content-Type': 'application/json',
+            'x-api-key': api_key  # 這裡將變數傳給 Flask
+        }
+        
+        # ======================================================
+        # 發送請求時，務必帶上 headers
+        # ======================================================
         if method == 'POST':
-            response = requests.post(url, json=body, timeout=600)
+            response = requests.post(url, json=body, headers=headers, timeout=600)
         else:
-            response = requests.get(url, timeout=60)
+            response = requests.get(url, headers=headers, timeout=60)
         
         try:
             return response.json()
         except:
             return response.text
-        
+            
     except Exception as e:
         logger.exception("Handler error")
         return {'error': str(e)}
+
 
 if __name__ == '__main__':
     logger.info("🎮 RunPod Serverless Handler starting")
