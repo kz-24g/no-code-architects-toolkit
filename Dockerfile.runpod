@@ -1,4 +1,4 @@
-# === RunPod GPU 環境 ===
+# === RunPod GPU 環境 (輕量化版) ===
 FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
 
 # 環境變數
@@ -7,7 +7,8 @@ ENV PYTHONUNBUFFERED=1
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
 
-# 1. 安裝基礎工具和 Python
+# 1. 安裝基礎工具、Python 和 [關鍵] 字體管理工具
+# [優化] 移除了 Playwright 所需的 UI 依賴庫 (libgtk, libnss3 等)
 RUN apt-get update && apt-get install -y \
     python3.10 \
     python3-pip \
@@ -20,6 +21,8 @@ RUN apt-get update && apt-get install -y \
     git \
     gnupg \
     lsb-release \
+    # 字體管理工具 (解決中文亂碼必備)
+    fontconfig \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. 手動加入 Jellyfin Repo 並安裝支援 NVENC 的 FFmpeg
@@ -29,7 +32,6 @@ RUN mkdir -p /etc/apt/keyrings && \
     echo "deb [signed-by=/etc/apt/keyrings/jellyfin.gpg] https://repo.jellyfin.org/ubuntu $VERSION_CODENAME main" | tee /etc/apt/sources.list.d/jellyfin.list && \
     apt-get update && \
     apt-get install -y jellyfin-ffmpeg6 && \
-    # 建立連結
     ln -s /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/local/bin/ffmpeg && \
     ln -s /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe && \
     rm -rf /var/lib/apt/lists/*
@@ -43,14 +45,22 @@ RUN ln -sf /usr/bin/python3.10 /usr/bin/python && \
 
 WORKDIR /app
 
-# 5. [關鍵修改] 安裝依賴 (強制安裝 jsonschema)
+# 5. 安裝 Python 依賴
 COPY requirements.txt .
+# [優化] 移除了 openai-whisper 和 playwright
+# 強制安裝核心套件以防快取問題
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
-    # 這裡強制安裝 jsonschema, boto3, psutil, ffmpeg-python 以防止快取問題遺漏
     pip install --no-cache-dir runpod requests jsonschema boto3 psutil ffmpeg-python
 
-# 6. 複製代碼
+# 6. [關鍵] 複製本地字體到系統目錄
+# 確保你的 Repo 根目錄下有 fonts 資料夾
+COPY ./fonts /usr/share/fonts/custom_nca
+
+# 7. [關鍵] 刷新字體快取
+RUN fc-cache -f -v
+
+# 8. 複製其餘代碼
 COPY . .
 
 # 創建臨時目錄
