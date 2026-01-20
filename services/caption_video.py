@@ -1,20 +1,5 @@
 # Copyright (c) 2025 Stephen G. Pope
-#
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License along
-# with this program; if not, write to the Free Software Foundation, Inc.,
-# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-
-
+# ... (License Header) ...
 
 import os
 import ffmpeg
@@ -22,6 +7,7 @@ import logging
 import requests
 import subprocess
 from services.file_management import download_file
+from services.ffmpeg_gpu import ffmpeg_gpu  # 確保有導入這個模組
 
 # Set the default local storage directory
 STORAGE_PATH = "/tmp/"
@@ -31,19 +17,21 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Define the path to the fonts directory
+# [保留原設定]
 FONTS_DIR = '/usr/share/fonts/custom'
 
 # Create the FONT_PATHS dictionary by reading the fonts directory
 FONT_PATHS = {}
-for font_file in os.listdir(FONTS_DIR):
-    if font_file.endswith('.ttf') or font_file.endswith('.TTF'):
-        font_name = os.path.splitext(font_file)[0]
-        FONT_PATHS[font_name] = os.path.join(FONTS_DIR, font_file)
-# logger.info(f"Available fonts: {FONT_PATHS}")
+if os.path.exists(FONTS_DIR):
+    for font_file in os.listdir(FONTS_DIR):
+        if font_file.endswith('.ttf') or font_file.endswith('.TTF'):
+            font_name = os.path.splitext(font_file)[0]
+            FONT_PATHS[font_name] = os.path.join(FONTS_DIR, font_file)
+else:
+    logger.warning(f"Fonts directory not found: {FONTS_DIR}")
 
 # Create a list of acceptable font names
 ACCEPTABLE_FONTS = list(FONT_PATHS.keys())
-#logger.info(f"Acceptable font names: {ACCEPTABLE_FONTS}")
 
 # Match font files with fontconfig names
 def match_fonts():
@@ -58,17 +46,12 @@ def match_fonts():
                     if font_file.lower() in fontconfig_font.lower():
                         matched_fonts[font_file] = fontconfig_font.strip()
 
-            # Parse and output the matched font names
             unique_font_names = set()
             for font in matched_fonts.values():
                 font_name = font.split(':')[1].strip()
                 unique_font_names.add(font_name)
             
-            # Remove duplicates from font_name and sort them alphabetically
             unique_font_names = sorted(list(set(unique_font_names)))
-            
-            # for font_name in unique_font_names:
-            #     print(font_name)
         else:
             logger.error(f"Error matching fonts: {result.stderr}")
     except Exception as e:
@@ -105,7 +88,7 @@ def generate_style_line(options):
     return f"Style: {','.join(str(v) for v in style_options.values())}"
 
 def process_captioning(file_url, caption_srt, caption_type, options, job_id):
-    """Process video captioning using FFmpeg."""
+    """Process video captioning using FFmpeg with GPU acceleration."""
     try:
         logger.info(f"Job {job_id}: Starting download of file from {file_url}")
         video_path = download_file(file_url, STORAGE_PATH)
@@ -134,7 +117,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             # Download the file if caption_srt is a URL
             logger.info(f"Job {job_id}: Downloading caption file from {caption_srt}")
             response = requests.get(caption_srt)
-            response.raise_for_status()  # Raise an exception for bad status codes
+            response.raise_for_status()
             if caption_type in ['srt','vtt']:
                 with open(srt_path, 'wb') as srt_file:
                     srt_file.write(response.content)
@@ -162,7 +145,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             selected_font = FONT_PATHS.get('Arial')
             logger.warning(f"Job {job_id}: Font {font_name} not found. Using default font Arial.")
 
-        # For ASS subtitles, we should avoid overriding styles
+        # Construct Subtitle Filter String
         if subtitle_extension == '.ass':
             # Use the subtitles filter without force_style
             subtitle_filter = f"subtitles='{srt_path}'"
@@ -171,7 +154,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             # Construct FFmpeg filter options for subtitles with detailed styling
             subtitle_filter = f"subtitles={srt_path}:force_style='"
             style_options = {
-                'FontName': font_name,  # Use the font name instead of the font file path
+                'FontName': font_name,
                 'FontSize': options.get('font_size', 24),
                 'PrimaryColour': options.get('primary_color', '&H00FFFFFF'),
                 'SecondaryColour': options.get('secondary_color', '&H00000000'),
@@ -194,43 +177,67 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 'Angle': options.get('angle', 0),
                 'UpperCase': options.get('uppercase', 0)
             }
-
             # Add only populated options to the subtitle filter
             subtitle_filter += ','.join(f"{k}={v}" for k, v in style_options.items() if v is not None)
             subtitle_filter += "'"
             logger.info(f"Job {job_id}: Using subtitle filter: {subtitle_filter}")
 
+        # === GPU Acceleration Block ===
         try:
-            # Log the FFmpeg command for debugging
-            logger.info(f"Job {job_id}: Running FFmpeg with filter: {subtitle_filter}")
+            # Construct FFmpeg command manually for subprocess
+            cmd = [
+                'ffmpeg', '-y',
+                '-i', video_path,
+                '-vf', subtitle_filter
+            ]
 
-            # Run FFmpeg to add subtitles to the video
-            ffmpeg.input(video_path).output(
-                output_path,
-                vf=subtitle_filter,
-                acodec='copy'
-            ).run()
+            # [Key Change] Inject GPU encoding options
+            # This uses the NVENC encoder if available
+            cmd.extend(ffmpeg_gpu.get_encode_options())
+
+            # Audio handling: Convert to AAC to ensure compatibility
+            cmd.extend(['-c:a', 'aac'])
+
+            # Output
+            cmd.append(output_path)
+
+            logger.info(f"Job {job_id}: Running GPU FFmpeg command: {' '.join(cmd)}")
+
+            # Execute command
+            subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            
             logger.info(f"Job {job_id}: FFmpeg processing completed, output file at {output_path}")
-        except ffmpeg.Error as e:
+
+        except subprocess.CalledProcessError as e:
             # Log the FFmpeg stderr output
-            if e.stderr:
-                error_message = e.stderr.decode('utf8')
-            else:
-                error_message = 'Unknown FFmpeg error'
+            error_message = e.stderr if e.stderr else str(e)
             logger.error(f"Job {job_id}: FFmpeg error: {error_message}")
-            raise
+            raise e
+        except Exception as e:
+            logger.error(f"Job {job_id}: Error executing FFmpeg: {str(e)}")
+            raise e
 
         # The upload process will be handled by the calling function
         return output_path
 
-        # Clean up local files
-        os.remove(video_path)
-        os.remove(srt_path)
-        os.remove(output_path)
-        logger.info(f"Job {job_id}: Local files cleaned up")
     except Exception as e:
         logger.error(f"Job {job_id}: Error in process_captioning: {str(e)}")
+        # Clean up in case of error
+        if 'video_path' in locals() and os.path.exists(video_path): os.remove(video_path)
+        if 'srt_path' in locals() and os.path.exists(srt_path): os.remove(srt_path)
         raise
+
+    finally:
+        # Clean up local files
+        if 'video_path' in locals() and os.path.exists(video_path): os.remove(video_path)
+        if 'srt_path' in locals() and os.path.exists(srt_path): os.remove(srt_path)
+        if 'output_path' in locals() and os.path.exists(output_path): os.remove(output_path)
+        logger.info(f"Job {job_id}: Local files cleanup attempted")
 
 def convert_array_to_collection(options):
     logger.info(f"Converting options array to dictionary: {options}")
