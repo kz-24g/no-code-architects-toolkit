@@ -159,15 +159,39 @@ def caption_video_v1(job_id, data):
         # Render the video with subtitles using FFmpeg
         try:
             import ffmpeg
-            ffmpeg.input(video_path).output(
+            
+            # [修改 1] 設定正確的 Filter 為 'ass' 以解決掉字問題
+            # 注意：ass filter 路徑在 Windows 需轉義，但在 Linux (RunPod) 通常直接給路徑即可
+            # 為了保險，我們確保路徑是絕對路徑
+            abs_ass_path = os.path.abspath(ass_path)
+            
+            # [修改 2] 針對 RunPod 優化：加入 GPU 加速參數
+            # 如果你確定環境有 GPU，建議使用 h264_nvenc
+            
+            stream = ffmpeg.input(video_path)
+            
+            stream = ffmpeg.output(
+                stream,
                 output_path,
-                vf=f"subtitles='{ass_path}'",
-                acodec='copy'
-            ).run(overwrite_output=True)
+                vf=f"ass='{abs_ass_path}'",  # <--- 關鍵修改：改成 ass filter
+                vcodec='h264_nvenc',         # <--- 建議修改：使用 GPU 編碼
+                preset='p4',                 # <--- 建議修改：GPU preset
+                acodec='aac'                 # 確保音訊兼容性
+            )
+            
+            # 執行命令
+            stream.run(overwrite_output=True)
+            
             logger.info(f"Job {job_id}: FFmpeg processing completed. Output saved to {output_path}")
+            
+        except ffmpeg.Error as e:
+            # 捕捉 ffmpeg-python 特有的錯誤訊息
+            error_message = e.stderr.decode('utf8') if e.stderr else str(e)
+            logger.error(f"Job {job_id}: FFmpeg error: {error_message}")
+            return {"error": f"FFmpeg error: {error_message}"}, "/v1/video/caption", 500
         except Exception as e:
-            logger.error(f"Job {job_id}: FFmpeg error: {str(e)}")
-            return {"error": f"FFmpeg error: {str(e)}"}, "/v1/video/caption", 500
+            logger.error(f"Job {job_id}: General error: {str(e)}")
+            return {"error": f"Error: {str(e)}"}, "/v1/video/caption", 500
 
         # Clean up the ASS file after use
         os.remove(ass_path)

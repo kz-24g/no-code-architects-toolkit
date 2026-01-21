@@ -130,25 +130,41 @@ def process_ffmpeg_compose(data, job_id):
         new_filters = []
         for filter_obj in data["filters"]:
             filter_str = filter_obj["filter"]
+            
             def replace_url(match):
                 prefix = match.group(1)
-                filter_type = match.group(2)
+                filter_type = match.group(2) # 這裡是 'subtitles' 或 'ass'
                 quote = match.group(3)
                 url = match.group(4)
                 closing_quote = match.group(5)
                 trailing = match.group(6) or ''
+                
                 if not url or url.strip() == '':
                     print(f"[DEBUG] Skipping empty URL for filter: {match.group(0)}")
                     return match.group(0)
+                
                 print(f"[DEBUG] Parsed URL for filter: {url}")
                 local_path = download_file(url, LOCAL_STORAGE_PATH)
                 subtitles_paths.append(local_path)
-                fixed_path = local_path.replace('\\', '/')
+                
+                # === [關鍵修改 START] 智能判斷並替換 Filter 類型 ===
+                # 如果下載的是 .ass 文件，且原本使用的是 subtitles filter，強制轉為 ass filter
+                # 這可以解決 RunPod 上 ffmpeg 掉字的問題
+                if local_path.lower().endswith('.ass') and filter_type == 'subtitles':
+                    print(f"[DEBUG] Auto-switching filter from 'subtitles' to 'ass' for file: {local_path}")
+                    filter_type = 'ass'
+                # === [關鍵修改 END] ===
+
+                # 確保路徑在 Linux 環境下也是正確的 (雖然 RunPod 是 Linux，但防呆)
+                fixed_path = os.path.abspath(local_path).replace('\\', '/')
+                
                 return f"{prefix}{filter_type}={quote}{fixed_path}{closing_quote}{trailing}"
+
             # Regex: (.*?)(subtitles|ass)=(['"])(https?://[^'\"]+)(['"])(.*)
             pattern = r"(.*?)(subtitles|ass)=([\'\"])(https?://[^'\"]+)([\'\"])(.*)"
             filter_str = re.sub(pattern, replace_url, filter_str)
             new_filters.append(filter_str)
+        
         filter_complex = ";".join(new_filters)
         command.extend(["-filter_complex", filter_complex])
     
