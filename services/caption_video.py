@@ -148,7 +148,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # Construct Subtitle Filter String
         if subtitle_extension == '.ass':
             # Use the subtitles filter without force_style
-            subtitle_filter = f"subtitles='{srt_path}'"
+            subtitle_filter = f"ass='{srt_path}'"
             logger.info(f"Job {job_id}: Using ASS subtitle filter: {subtitle_filter}")
         else:
             # Construct FFmpeg filter options for subtitles with detailed styling
