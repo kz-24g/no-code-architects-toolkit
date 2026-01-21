@@ -140,10 +140,10 @@ def process_ffmpeg_compose(data, job_id):
                 trailing = match.group(6) or ''
                 
                 if not url or url.strip() == '':
-                    print(f"[DEBUG] Skipping empty URL for filter: {match.group(0)}")
+                    # print(f"[DEBUG] Skipping empty URL for filter: {match.group(0)}")
                     return match.group(0)
                 
-                print(f"[DEBUG] Parsed URL for filter: {url}")
+                # print(f"[DEBUG] Parsed URL for filter: {url}")
                 local_path = download_file(url, LOCAL_STORAGE_PATH)
                 subtitles_paths.append(local_path)
                 
@@ -151,11 +151,22 @@ def process_ffmpeg_compose(data, job_id):
                 # 如果下載的是 .ass 文件，且原本使用的是 subtitles filter，強制轉為 ass filter
                 # 這可以解決 RunPod 上 ffmpeg 掉字的問題
                 if local_path.lower().endswith('.ass') and filter_type == 'subtitles':
-                    print(f"[DEBUG] Auto-switching filter from 'subtitles' to 'ass' for file: {local_path}")
+                    # print(f"[DEBUG] Auto-switching filter from 'subtitles' to 'ass' for file: {local_path}")
                     filter_type = 'ass'
+                    
+                    # [新增] 必須清理 ass 不支援的參數，否則會報 Invalid argument 錯誤
+                    # 確保移除 original_size 和 force_style
+                    import re # 確保這裡有引用 re 模組，或者放在檔案最上方
+                    if 'original_size' in trailing:
+                        # print(f"[DEBUG] Removing unsupported 'original_size' from ass filter")
+                        trailing = re.sub(r':original_size=[^:]+', '', trailing)
+                    
+                    if 'force_style' in trailing:
+                        # print(f"[DEBUG] Removing unsupported 'force_style' from ass filter")
+                        trailing = re.sub(r':force_style=[^:]+', '', trailing)
                 # === [關鍵修改 END] ===
 
-                # 確保路徑在 Linux 環境下也是正確的 (雖然 RunPod 是 Linux，但防呆)
+                # 確保路徑在 Linux 環境下也是正確的
                 fixed_path = os.path.abspath(local_path).replace('\\', '/')
                 
                 return f"{prefix}{filter_type}={quote}{fixed_path}{closing_quote}{trailing}"
