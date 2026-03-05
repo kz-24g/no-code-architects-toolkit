@@ -26,14 +26,15 @@ def time_to_seconds(time_str):
         raise ValueError(f"Invalid time format: {time_str}. Expected HH:MM:SS[.mmm] or seconds.")
 
 
-def trim_audio(audio_url, start=None, end=None, job_id=None, audio_codec='copy', audio_bitrate='128k'):
+def trim_audio(audio_url, start=None, end=None, duration=None, job_id=None, audio_codec='copy', audio_bitrate='128k'):
     """
-    Trim an audio file to the segment between start and end.
+    Trim an audio file to the segment between start and end (or start + duration).
 
     Args:
         audio_url (str): URL of the audio file to trim.
         start (str, optional): Start timestamp (keep audio from here). Default: beginning.
-        end (str, optional): End timestamp (keep audio until here). Default: end of file.
+        end (str, optional): End timestamp (keep audio until here). Mutually exclusive with duration.
+        duration (float, optional): Duration in seconds to keep from start. Mutually exclusive with end.
         job_id (str, optional): Unique job identifier.
         audio_codec (str, optional): Audio codec for re-encoding (default: 'copy' = no re-encode).
         audio_bitrate (str, optional): Audio bitrate used when re-encoding (default: '128k').
@@ -66,14 +67,21 @@ def trim_audio(audio_url, start=None, end=None, job_id=None, audio_codec='copy',
             file_duration = 86400
 
         start_seconds = time_to_seconds(start) if start else 0
-        end_seconds = time_to_seconds(end) if end else file_duration
+
+        if duration is not None:
+            trim_duration = float(duration)
+        elif end is not None:
+            end_seconds = time_to_seconds(end)
+            if end_seconds > file_duration:
+                end_seconds = file_duration
+            trim_duration = end_seconds - start_seconds
+        else:
+            trim_duration = file_duration - start_seconds
 
         if start_seconds < 0:
             start_seconds = 0
-        if end_seconds > file_duration:
-            end_seconds = file_duration
-        if start_seconds >= end_seconds:
-            raise ValueError(f"start ({start}) must be before end ({end})")
+        if trim_duration <= 0:
+            raise ValueError(f"Computed trim duration is <= 0. Check start/end/duration values.")
 
         cmd = ['ffmpeg', '-y']
 
@@ -82,8 +90,7 @@ def trim_audio(audio_url, start=None, end=None, job_id=None, audio_codec='copy',
 
         cmd.extend(['-i', input_filename])
 
-        duration = end_seconds - start_seconds
-        cmd.extend(['-t', str(duration)])
+        cmd.extend(['-t', str(trim_duration)])
 
         if audio_codec == 'copy':
             cmd.extend(['-c:a', 'copy'])

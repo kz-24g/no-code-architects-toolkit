@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
         "audio_url": {"type": "string", "format": "uri"},
         "start": {"type": "string"},
         "end": {"type": "string"},
+        "duration": {"type": "number", "minimum": 0},
         "audio_codec": {"type": "string"},
         "audio_bitrate": {"type": "string"},
         "webhook_url": {"type": "string", "format": "uri"},
@@ -31,8 +32,12 @@ def audio_trim(job_id, data):
     audio_url = data['audio_url']
     start = data.get('start')
     end = data.get('end')
+    duration = data.get('duration')
     audio_codec = data.get('audio_codec', 'copy')
     audio_bitrate = data.get('audio_bitrate', '128k')
+
+    if end and duration:
+        return "Provide either 'end' or 'duration', not both.", "/v1/audio/trim", 400
 
     logger.info(f"Job {job_id}: Received audio trim request for {audio_url}")
 
@@ -41,6 +46,7 @@ def audio_trim(job_id, data):
             audio_url=audio_url,
             start=start,
             end=end,
+            duration=duration,
             job_id=job_id,
             audio_codec=audio_codec,
             audio_bitrate=audio_bitrate
